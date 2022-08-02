@@ -1,21 +1,16 @@
 package scalapb.spark
 
-import org.apache.spark.sql.catalyst.{InternalRow, ScalaReflection}
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, GenericInternalRow, Literal}
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
-import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData}
 import org.apache.spark.sql.execution.ExternalRDD
-import org.apache.spark.sql.{DataFrame, Dataset, Encoder, FramelessInternals, Row, SQLContext, SparkSession}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataType, DoubleType, FloatType, IntegerType, LongType, MapType, Metadata, StringType, StructField, StructType, TimestampType}
+import org.apache.spark.sql.types._
+import org.apache.spark.sql._
 import org.apache.spark.unsafe.types.UTF8String
-import scalapb.{GeneratedMessage, GeneratedMessageCompanion, Message}
-import scalapb.descriptors.{FieldDescriptor, PBoolean, PByteString, PDouble, PEmpty, PEnum, PFloat, PInt, PLong, PMessage, PRepeated, PString, PValue, ScalaType}
-import scalapb.descriptors.Descriptor
-import com.google.protobuf.wrappers.Int32Value
-import org.apache.spark.sql.catalyst.util.ArrayBasedMapData
-
-import java.sql.Timestamp
+import scalapb.descriptors._
+import scalapb.{GeneratedMessage, GeneratedMessageCompanion}
 
 class ProtoSQL(val schemaOptions: SchemaOptions) extends Udfs {
   self =>
@@ -36,14 +31,27 @@ class ProtoSQL(val schemaOptions: SchemaOptions) extends Udfs {
     protoToDataFrame(sqlContext.sparkSession, protoRdd)
   }
 
-  def schemaFor[T <: GeneratedMessage](implicit
+  def schemaFor[T <: GeneratedMessage](dataType: Option[StructType])(implicit
       cmp: GeneratedMessageCompanion[T]
-  ): DataType = schemaFor(cmp.scalaDescriptor)
+  ): DataType = schemaFor(cmp.scalaDescriptor, dataType)
 
-  def schemaFor(descriptor: Descriptor): DataType =
+  def schemaFor(descriptor: Descriptor, dataTypeOpt: Option[StructType] = None): DataType = {
+    val columnsOpt = dataTypeOpt.map(_.names.toSet)
+    val containsColumn: String => Boolean = (dataTypeOpt, columnsOpt) match {
+      case (Some(_), Some(columns)) =>
+        field => columns.contains(field)
+      case _ => _ => true
+    }
     schemaOptions
       .customDataTypeFor(descriptor)
-      .getOrElse(StructType(descriptor.fields.map(structFieldFor)))
+      .getOrElse(
+        StructType(
+          descriptor.fields
+            .filter(field => containsColumn(field.name))
+            .map(field => structFieldFor(field, dataTypeOpt.map(t => t(field.name).dataType)))
+        )
+      )
+  }
 
   def toRowData(fd: FieldDescriptor, pvalue: PValue): Any =
     pvalue match {
@@ -87,8 +95,7 @@ class ProtoSQL(val schemaOptions: SchemaOptions) extends Udfs {
       val seconds = msg.value.get(fSeconds).get.asInstanceOf[PLong].value
       val nanos = msg.value.get(fNanos).get.asInstanceOf[PInt].value
       seconds * 1000000 + nanos / 1000
-    } else
-    if (schemaOptions.isUnpackedPrimitiveWrapper(descriptor))
+    } else if (schemaOptions.isUnpackedPrimitiveWrapper(descriptor))
       (for {
         fd <- descriptor.findFieldByName("value")
         value <- msg.value.get(fd)
@@ -110,7 +117,7 @@ class ProtoSQL(val schemaOptions: SchemaOptions) extends Udfs {
         )
     }
 
-  def singularDataType(fd: FieldDescriptor): DataType =
+  def singularDataType(fd: FieldDescriptor, dataType: Option[DataType] = None): DataType =
     fd.scalaType match {
       case ScalaType.Int         => IntegerType
       case ScalaType.Long        => LongType
@@ -119,16 +126,22 @@ class ProtoSQL(val schemaOptions: SchemaOptions) extends Udfs {
       case ScalaType.Boolean     => BooleanType
       case ScalaType.String      => StringType
       case ScalaType.ByteString  => BinaryType
-      case ScalaType.Message(md) => schemaFor(md)
+      case ScalaType.Message(md) => schemaFor(md, dataType.map(_.asInstanceOf[StructType]))
       case _: ScalaType.Enum     => StringType
     }
 
-  def dataTypeFor(fd: FieldDescriptor): DataType =
+  def dataTypeFor(fd: FieldDescriptor, dataType: Option[DataType] = None): DataType =
     if (fd.isMapField) fd.scalaType match {
       case ScalaType.Message(mapEntry) =>
         MapType(
-          singularDataType(mapEntry.findFieldByNumber(1).get),
-          singularDataType(mapEntry.findFieldByNumber(2).get)
+          singularDataType(
+            mapEntry.findFieldByNumber(1).get,
+            dataType.map(t => t.asInstanceOf[MapType].keyType)
+          ),
+          singularDataType(
+            mapEntry.findFieldByNumber(2).get,
+            dataType.map(t => t.asInstanceOf[MapType].valueType)
+          )
         )
       case _ =>
         throw new RuntimeException(
@@ -136,12 +149,12 @@ class ProtoSQL(val schemaOptions: SchemaOptions) extends Udfs {
         )
     }
     else if (fd.isRepeated) ArrayType(singularDataType(fd), containsNull = false)
-    else singularDataType(fd)
+    else singularDataType(fd, dataType)
 
-  def structFieldFor(fd: FieldDescriptor): StructField = {
+  def structFieldFor(fd: FieldDescriptor, dataType: Option[DataType] = None): StructField = {
     StructField(
       schemaOptions.columnNaming.fieldName(fd),
-      dataTypeFor(fd),
+      dataTypeFor(fd, dataType),
       nullable = !fd.isRequired && !fd.isRepeated
     )
   }
@@ -150,7 +163,7 @@ class ProtoSQL(val schemaOptions: SchemaOptions) extends Udfs {
       spark: SparkSession,
       data: Seq[T]
   ): DataFrame = {
-    val schema = schemaFor[T]
+    val schema = schemaFor[T](None)
     schema match {
       case schema: StructType =>
         val attributeSeq =

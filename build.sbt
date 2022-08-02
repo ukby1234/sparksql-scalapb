@@ -124,6 +124,7 @@ lazy val `sparksql-scalapb` = (projectMatrix in file("sparksql-scalapb"))
   )
 
 ThisBuild / publishTo := sonatypePublishToBundle.value
+ThisBuild / version := "0.11.0-SNAPSHOT"
 
 lazy val root =
   project

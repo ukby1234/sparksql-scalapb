@@ -1,8 +1,23 @@
 package scalapb.spark
 
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, MapObjects, StaticInvoke}
-import org.apache.spark.sql.catalyst.expressions.{CreateNamedStruct, Expression, If, IsNull, Literal}
-import org.apache.spark.sql.types.{BooleanType, IntegerType, ObjectType, TimestampType}
+import org.apache.spark.sql.catalyst.expressions.{
+  CreateNamedStruct,
+  Expression,
+  If,
+  IsNull,
+  Literal
+}
+import org.apache.spark.sql.types.{
+  ArrayType,
+  BooleanType,
+  DataType,
+  IntegerType,
+  MapType,
+  ObjectType,
+  StructType,
+  TimestampType
+}
 import scalapb.descriptors.{Descriptor, FieldDescriptor, PValue, ScalaType}
 import scalapb.GeneratedMessageCompanion
 import org.apache.spark.sql.catalyst.expressions.objects.ExternalMapToCatalyst
@@ -15,12 +30,21 @@ trait ToCatalystHelpers {
 
   def messageToCatalyst(
       cmp: GeneratedMessageCompanion[_],
-      input: Expression
-  ): Expression =
+      input: Expression,
+      dataTypeOpt: Option[StructType] = None
+  ): Expression = {
+    val columnsOpt = dataTypeOpt.map(_.names.toSet)
+    val containsColumn: String => Boolean = (dataTypeOpt, columnsOpt) match {
+      case (Some(_), Some(columns)) =>
+        field => columns.contains(field)
+      case _ => _ => true
+    }
     if (protoSql.schemaOptions.isUnpackedPrimitiveWrapper(cmp.scalaDescriptor)) {
       val fd = cmp.scalaDescriptor.fields(0)
       fieldToCatalyst(cmp, fd, input)
-    } else if (protoSql.schemaOptions.sparkTimestamps && cmp.scalaDescriptor.fullName == "google.protobuf.Timestamp") {
+    } else if (
+      protoSql.schemaOptions.sparkTimestamps && cmp.scalaDescriptor.fullName == "google.protobuf.Timestamp"
+    ) {
       val secondsFd: FieldDescriptor = cmp.scalaDescriptor.fields(0)
       val nanosFd: FieldDescriptor = cmp.scalaDescriptor.fields(1)
       val secondsExpr = fieldToCatalyst(cmp, secondsFd, input)
@@ -32,13 +56,20 @@ trait ToCatalystHelpers {
         secondsExpr :: nanosExpr :: Nil
       )
     } else {
-      val nameExprs = cmp.scalaDescriptor.fields.map { field =>
-        Literal(schemaOptions.columnNaming.fieldName(field))
-      }
+      val nameExprs =
+        cmp.scalaDescriptor.fields.filter(field => containsColumn(field.name)).map { field =>
+          Literal(schemaOptions.columnNaming.fieldName(field))
+        }
 
-      val valueExprs = cmp.scalaDescriptor.fields.map { field =>
-        fieldToCatalyst(cmp, field, input)
-      }
+      val valueExprs =
+        cmp.scalaDescriptor.fields.filter(field => containsColumn(field.name)).map { field =>
+          fieldToCatalyst(
+            cmp,
+            field,
+            input,
+            dataTypeOpt.map(dataType => dataType(field.name).dataType)
+          )
+        }
 
       // the way exprs are encoded in CreateNamedStruct
       val exprs = nameExprs.zip(valueExprs).flatMap { case (nameExpr, valueExpr) =>
@@ -49,10 +80,12 @@ trait ToCatalystHelpers {
       val nullExpr = Literal.create(null, createExpr.dataType)
       If(IsNull(input), nullExpr, createExpr)
     }
+  }
 
   def fieldGetterAndTransformer(
       cmp: GeneratedMessageCompanion[_],
-      fd: FieldDescriptor
+      fd: FieldDescriptor,
+      dataType: Option[DataType] = None
   ): (Expression => Expression, Expression => Expression) = {
     def messageFieldCompanion = cmp.messageCompanionForFieldNumber(fd.number)
 
@@ -97,7 +130,7 @@ trait ToCatalystHelpers {
       (
         getFieldByNumber,
         { e: Expression =>
-          messageToCatalyst(messageFieldCompanion, e)
+          messageToCatalyst(messageFieldCompanion, e, dataType.map(_.asInstanceOf[StructType]))
         }
       )
     }
@@ -106,12 +139,13 @@ trait ToCatalystHelpers {
   def fieldToCatalyst(
       cmp: GeneratedMessageCompanion[_],
       fd: FieldDescriptor,
-      inputObject: Expression
+      inputObject: Expression,
+      dataType: Option[DataType] = None
   ): Expression = {
 
     val isMessage = fd.scalaType.isInstanceOf[ScalaType.Message]
 
-    val (fieldGetter, transform) = fieldGetterAndTransformer(cmp, fd)
+    val (fieldGetter, transform) = fieldGetterAndTransformer(cmp, fd, dataType)
 
     def messageFieldCompanion = cmp.messageCompanionForFieldNumber(fd.number)
 
@@ -122,7 +156,11 @@ trait ToCatalystHelpers {
         val valueDesc =
           fd.scalaType.asInstanceOf[ScalaType.Message].descriptor.findFieldByNumber(2).get
         val (_, valueTransform) =
-          fieldGetterAndTransformer(cmp.messageCompanionForFieldNumber(fd.number), valueDesc)
+          fieldGetterAndTransformer(
+            cmp.messageCompanionForFieldNumber(fd.number),
+            valueDesc,
+            dataType.map(_.asInstanceOf[MapType].valueType)
+          )
         val valueType = valueDesc.scalaType match {
           case ScalaType.Message(_) => ObjectType(classOf[GeneratedMessage])
           case _                    => ObjectType(classOf[PValue])
@@ -142,13 +180,15 @@ trait ToCatalystHelpers {
           valueTransform,
           true
         )
-      } else if (isMessage)
+      } else if (isMessage) {
+        val (fieldGetter, transform) =
+          fieldGetterAndTransformer(cmp, fd, dataType.map(_.asInstanceOf[ArrayType].elementType))
         MapObjects(
           transform,
           fieldGetter(inputObject),
           ObjectType(messageFieldCompanion.defaultInstance.getClass)
         )
-      else {
+      } else {
         val getter = StaticInvoke(
           JavaHelpers.getClass,
           ObjectType(classOf[Vector[_]]),

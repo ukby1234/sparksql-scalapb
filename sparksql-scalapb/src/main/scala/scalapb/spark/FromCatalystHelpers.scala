@@ -1,11 +1,16 @@
 package scalapb.spark
 
 import com.google.protobuf.ByteString
-import org.apache.spark.sql.catalyst.analysis.{UnresolvedExtractValue}
+import org.apache.spark.sql.catalyst.analysis.UnresolvedExtractValue
 import org.apache.spark.sql.catalyst.expressions
-import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, MapObjects, NewInstance, StaticInvoke}
+import org.apache.spark.sql.catalyst.expressions.objects.{
+  Invoke,
+  MapObjects,
+  NewInstance,
+  StaticInvoke
+}
 import org.apache.spark.sql.catalyst.expressions.{CreateArray, Expression, If, IsNull, Literal}
-import org.apache.spark.sql.types.{MapType, ObjectType}
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, ObjectType, StructType}
 import scalapb.GeneratedMessageCompanion
 import scalapb.descriptors._
 import org.apache.spark.sql.catalyst.expressions.objects.CatalystToExternalMap
@@ -20,14 +25,32 @@ trait FromCatalystHelpers {
 
   def pmessageFromCatalyst(
       cmp: GeneratedMessageCompanion[_],
-      input: Expression
+      input: Expression,
+      dataTypeOpt: Option[StructType] = None
   ): Expression = {
+    val columnsOpt = dataTypeOpt.map(_.names.toSet)
+    val containsColumn: String => Boolean = (dataTypeOpt, columnsOpt) match {
+      case (Some(_), Some(columns)) =>
+        field => columns.contains(field)
+      case _ => _ => true
+    }
     val args: immutable.Seq[Expression] =
       if (schemaOptions.isUnpackedPrimitiveWrapper(cmp.scalaDescriptor))
         cmp.scalaDescriptor.fields.map { fd =>
-          fieldFromCatalyst(cmp, fd, input)
+          if (containsColumn(fd.name)) {
+            fieldFromCatalyst(
+              cmp,
+              fd,
+              input,
+              dataTypeOpt.map(dataType => dataType(fd.name).dataType)
+            )
+          } else {
+            Literal.fromObject(PEmpty, ObjectType(classOf[PValue]))
+          }
         }
-      else if (schemaOptions.sparkTimestamps && cmp.scalaDescriptor.fullName == "google.protobuf.Timestamp") {
+      else if (
+        schemaOptions.sparkTimestamps && cmp.scalaDescriptor.fullName == "google.protobuf.Timestamp"
+      ) {
         immutable.Seq(
           StaticInvoke(
             JavaTimestampHelpers.getClass,
@@ -40,12 +63,21 @@ trait FromCatalystHelpers {
             ObjectType(classOf[PValue]),
             "extractNanosFromMicrosTimestamp",
             input :: Nil
-          ),
+          )
         )
       } else {
         val expressions: immutable.Seq[Expression] = cmp.scalaDescriptor.fields.map { fd =>
-          val newPath = addToPath(input, schemaOptions.columnNaming.fieldName(fd))
-          fieldFromCatalyst(cmp, fd, newPath)
+          if (containsColumn(fd.name)) {
+            val newPath = addToPath(input, schemaOptions.columnNaming.fieldName(fd))
+            fieldFromCatalyst(
+              cmp,
+              fd,
+              newPath,
+              dataTypeOpt.map(dataType => dataType(fd.name).dataType)
+            )
+          } else {
+            Literal.fromObject(PEmpty, ObjectType(classOf[PValue]))
+          }
         }
         expressions
       }
@@ -67,13 +99,15 @@ trait FromCatalystHelpers {
   def fieldFromCatalyst(
       cmp: GeneratedMessageCompanion[_],
       fd: FieldDescriptor,
-      input: Expression
+      input: Expression,
+      dataType: Option[DataType] = None
   ): Expression = {
     if (fd.isRepeated && !fd.isMapField) {
+      val elementType = dataType.map(_.asInstanceOf[ArrayType].elementType)
       val objs = MapObjects(
-        (input: Expression) => singleFieldValueFromCatalyst(cmp, fd, input),
+        (input: Expression) => singleFieldValueFromCatalyst(cmp, fd, input, elementType),
         input,
-        protoSql.singularDataType(fd)
+        protoSql.singularDataType(fd, elementType)
       )
       StaticInvoke(
         JavaHelpers.getClass,
@@ -87,9 +121,21 @@ trait FromCatalystHelpers {
       val valDesc = mapEntryCmp.scalaDescriptor.findFieldByNumber(2).get
       val urobjs = MyUnresolvedCatalystToExternalMap(
         input,
-        (in: Expression) => singleFieldValueFromCatalyst(mapEntryCmp, keyDesc, in),
-        (in: Expression) => singleFieldValueFromCatalyst(mapEntryCmp, valDesc, in),
-        ProtoSQL.dataTypeFor(fd).asInstanceOf[MapType],
+        (in: Expression) =>
+          singleFieldValueFromCatalyst(
+            mapEntryCmp,
+            keyDesc,
+            in,
+            dataType.map(_.asInstanceOf[MapType].keyType)
+          ),
+        (in: Expression) =>
+          singleFieldValueFromCatalyst(
+            mapEntryCmp,
+            valDesc,
+            in,
+            dataType.map(_.asInstanceOf[MapType].valueType)
+          ),
+        ProtoSQL.dataTypeFor(fd, dataType).asInstanceOf[MapType],
         classOf[Vector[(Any, Any)]]
       )
       val objs = MyCatalystToExternalMap(urobjs)
@@ -104,15 +150,16 @@ trait FromCatalystHelpers {
       If(
         IsNull(input),
         Literal.fromObject(PEmpty, ObjectType(classOf[PValue])),
-        singleFieldValueFromCatalyst(cmp, fd, input)
+        singleFieldValueFromCatalyst(cmp, fd, input, dataType)
       )
-    else singleFieldValueFromCatalyst(cmp, fd, input)
+    else singleFieldValueFromCatalyst(cmp, fd, input, dataType)
   }
 
   def singleFieldValueFromCatalyst(
       cmp: GeneratedMessageCompanion[_],
       fd: FieldDescriptor,
-      input: Expression
+      input: Expression,
+      dataType: Option[DataType] = None
   ): Expression = {
     fd.scalaType match {
       case ScalaType.ByteString =>
@@ -138,7 +185,8 @@ trait FromCatalystHelpers {
       case ScalaType.Message(_) =>
         pmessageFromCatalyst(
           cmp.messageCompanionForFieldNumber(fd.number),
-          input
+          input,
+          dataType.map(_.asInstanceOf[StructType])
         )
       case ScalaType.String =>
         val asString = Invoke(input, "toString", ObjectType(classOf[String]))

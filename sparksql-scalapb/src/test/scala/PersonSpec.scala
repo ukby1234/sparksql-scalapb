@@ -345,7 +345,7 @@ class PersonSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
 
   "parsing null repeated from json" should "work" in {
     spark.read
-      .schema(ProtoSQL.schemaFor[Person].asInstanceOf[types.StructType])
+      .schema(ProtoSQL.schemaFor[Person](None).asInstanceOf[types.StructType])
       .json("./sparksql-scalapb/src/test/assets/person_null_repeated.json")
       .as[Person]
       .collect() must contain theSameElementsAs Seq(

@@ -7,16 +7,9 @@ import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.{Expression, If, IsNull, Literal}
 import org.apache.spark.sql.types._
 import scalapb._
-import scalapb.descriptors.{PValue, Reads}
+import scalapb.descriptors.Reads
 
 import scala.reflect.ClassTag
-import org.apache.spark.sql.catalyst.expressions.CreateNamedStruct
-import org.apache.spark.sql.catalyst.expressions.BoundReference
-import org.apache.spark.unsafe.types.UTF8String
-import org.apache.spark.sql.catalyst.WalkedTypePath
-import org.apache.spark.sql.catalyst.expressions.objects.NewInstance
-import scalapb.descriptors.PMessage
-import org.apache.spark.sql.catalyst.expressions.CreateArray
 
 trait TypedEncoders extends FromCatalystHelpers with ToCatalystHelpers with Serializable {
   class MessageTypedEncoder[T <: GeneratedMessage](implicit
@@ -27,7 +20,7 @@ trait TypedEncoders extends FromCatalystHelpers with ToCatalystHelpers with Seri
 
     override def jvmRepr: DataType = ObjectType(ct.runtimeClass)
 
-    override def catalystRepr: DataType = protoSql.schemaFor(cmp)
+    override def catalystRepr: DataType = protoSql.schemaFor(None)(cmp)
 
     def fromCatalyst(path: Expression): Expression = {
       val expr = pmessageFromCatalyst(cmp, path)
@@ -47,6 +40,38 @@ trait TypedEncoders extends FromCatalystHelpers with ToCatalystHelpers with Seri
 
     override def toCatalyst(path: Expression): Expression = {
       val ret = messageToCatalyst(cmp, path)
+      ret
+    }
+  }
+
+  class MessageTypedEncoderWithSchema[T <: GeneratedMessage](dataType: StructType)(implicit
+      cmp: GeneratedMessageCompanion[T],
+      ct: ClassTag[T]
+  ) extends TypedEncoder[T] {
+    override def nullable: Boolean = false
+
+    override def jvmRepr: DataType = ObjectType(ct.runtimeClass)
+
+    override def catalystRepr: DataType = protoSql.schemaFor(Some(dataType))(cmp)
+
+    def fromCatalyst(path: Expression): Expression = {
+      val expr = pmessageFromCatalyst(cmp, path, Some(dataType))
+
+      val reads = Invoke(
+        Literal.fromObject(cmp),
+        "messageReads",
+        ObjectType(classOf[Reads[_]]),
+        Nil
+      )
+
+      val read = Invoke(reads, "read", ObjectType(classOf[Function[_, _]]))
+
+      val ret = Invoke(read, "apply", ObjectType(ct.runtimeClass), expr :: Nil)
+      ret
+    }
+
+    override def toCatalyst(path: Expression): Expression = {
+      val ret = messageToCatalyst(cmp, path, Some(dataType))
       ret
     }
   }

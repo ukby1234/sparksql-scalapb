@@ -7,12 +7,22 @@ import com.google.protobuf.Field
 import org.apache.parquet.example.data.simple.Primitive
 import org.apache.arrow.flatbuf.Schema
 import scalapb.descriptors.Descriptor
-import org.apache.spark.sql.types.{BinaryType, BooleanType, DataType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampType}
+import org.apache.spark.sql.types.{
+  BinaryType,
+  BooleanType,
+  DataType,
+  DoubleType,
+  FloatType,
+  IntegerType,
+  LongType,
+  StringType,
+  TimestampType
+}
 
 case class SchemaOptions(
     columnNaming: ColumnNaming,
     retainPrimitiveWrappers: Boolean,
-    sparkTimestamps: Boolean,
+    sparkTimestamps: Boolean
 ) {
   def withScalaNames = copy(columnNaming = ColumnNaming.ScalaNames)
 
@@ -33,7 +43,8 @@ case class SchemaOptions(
 }
 
 object SchemaOptions {
-  val Default = SchemaOptions(ColumnNaming.ProtoNames, retainPrimitiveWrappers = false, sparkTimestamps = false)
+  val Default =
+    SchemaOptions(ColumnNaming.ProtoNames, retainPrimitiveWrappers = false, sparkTimestamps = false)
 
   def apply(): SchemaOptions = Default
 
