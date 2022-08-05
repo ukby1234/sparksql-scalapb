@@ -49,22 +49,12 @@ trait FromCatalystHelpers {
           }
         }
       else if (
-        schemaOptions.sparkTimestamps && cmp.scalaDescriptor.fullName == "google.protobuf.Timestamp"
+        schemaOptions.catalystMappers.exists(_.convertedType(cmp.scalaDescriptor).isDefined)
       ) {
-        immutable.Seq(
-          StaticInvoke(
-            JavaTimestampHelpers.getClass,
-            ObjectType(classOf[PValue]),
-            "extractSecondsFromMicrosTimestamp",
-            input :: Nil
-          ),
-          StaticInvoke(
-            JavaTimestampHelpers.getClass,
-            ObjectType(classOf[PValue]),
-            "extractNanosFromMicrosTimestamp",
-            input :: Nil
-          )
-        )
+        schemaOptions.catalystMappers
+          .filter(_.convertedType(cmp.scalaDescriptor).isDefined)
+          .map(_.fromCatalyst(cmp, input, this))
+          .head
       } else {
         val expressions: immutable.Seq[Expression] = cmp.scalaDescriptor.fields.map { fd =>
           if (containsColumn(fd.name)) {
