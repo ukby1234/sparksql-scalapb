@@ -7,7 +7,7 @@ import org.apache.spark.sql.execution.ExternalRDD
 import org.apache.spark.sql.{DataFrame, Encoder, FramelessInternals, SparkSession}
 import scalapb.GeneratedMessage
 
-object SparkCompatibilityHelpers {
+private[spark] object SparkCompatibilityHelpers {
   def protoToDataFrame[T <: GeneratedMessage: Encoder](
       sparkSession: SparkSession,
       protoRdd: org.apache.spark.rdd.RDD[T]
