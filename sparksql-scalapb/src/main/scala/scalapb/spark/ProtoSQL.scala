@@ -1,8 +1,6 @@
 package scalapb.spark
 
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.execution.ExternalRDD
 import org.apache.spark.sql.types._
 import scalapb.descriptors._
 import scalapb.{GeneratedMessage, GeneratedMessageCompanion}
