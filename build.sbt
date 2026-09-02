@@ -8,7 +8,7 @@ Global / concurrentRestrictions := Seq(
   Tags.limit(Tags.Test, 1)
 )
 
-val Scala212 = "2.12.20"
+val Scala212 = "2.12.21"
 
 val Scala213 = "2.13.18"
 
@@ -18,7 +18,7 @@ lazy val Spark41 = Spark("4.1.3")
 
 lazy val Spark40 = Spark("4.0.4")
 
-lazy val Spark35 = Spark("3.5.6")
+lazy val Spark35 = Spark("3.5.9")
 
 lazy val Spark34 = Spark("3.4.4")
 
@@ -28,7 +28,7 @@ lazy val Spark32 = Spark("3.2.3")
 
 lazy val Spark31 = Spark("3.1.3")
 
-lazy val ScalaPB0_11 = ScalaPB("0.11.18")
+lazy val ScalaPB0_11 = ScalaPB("0.11.20")
 
 lazy val ScalaPB0_10 = ScalaPB("0.10.11")
 
@@ -61,8 +61,8 @@ lazy val `sparksql-scalapb` = (projectMatrix in file("sparksql-scalapb"))
       "com.thesamet.scalapb" %% "scalapb-runtime" % scalapb.value.scalapbVersion % "protobuf",
       "org.apache.spark" %% "spark-sql" % spark.value.sparkVersion % "provided",
       "org.apache.spark" %% "spark-sql" % spark.value.sparkVersion % "test",
-      "org.scalatest" %% "scalatest" % "3.2.19" % "test",
-      "org.scalatestplus" %% "scalacheck-1-17" % "3.2.18.0" % "test",
+      "org.scalatest" %% "scalatest" % "3.2.20" % "test",
+      "org.scalatestplus" %% "scalacheck-1-19" % "3.2.20.0" % "test",
       "com.github.alexarchambault" %% "scalacheck-shapeless_1.16" % "1.3.1" % "test"
     ),
     spark := {
